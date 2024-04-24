@@ -6,6 +6,7 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "user_ringbuf.h"
+#include <errno.h>
 
 char _license[] SEC("license") = "GPL";
 
@@ -24,10 +25,22 @@ struct
 int read = 0;
 
 static long
-do_nothing_cb(struct bpf_dynptr *dynptr, void *context)
+do_nothing_cb(struct bpf_dynptr *dynptr, int *context)
 {
+	struct user_sample *sample;
+	sample = bpf_dynptr_data(dynptr, 0, sizeof(*sample));
+	if (!sample)
+		return 0;
+	bpf_printk("sample->i is: %d", sample->i);
+	int value = sample->i;
+	bpf_printk("value is: %d", value);
+	*context = sample->i;
+	bpf_printk("context is: %d", *context);
 	struct event *e;
 	pid_t pid;
+	//__builtin_memcpy(&context, &(sample->i), sizeof(sample->i));
+	//bpf_printk("Context is: %d", context);
+	//*context = sample->i;
 	/* get PID and TID of exiting thread/process */
 	pid = bpf_get_current_pid_tgid() >> 32;
 
@@ -48,11 +61,28 @@ do_nothing_cb(struct bpf_dynptr *dynptr, void *context)
 SEC("tracepoint/syscalls/sys_exit_kill")
 int kill_exit(struct trace_event_raw_sys_exit *ctx)
 {
-	long num_samples;
+	long ret;
 	int err = 0;
-	
+	int context;
 	// receive data from userspace
-	num_samples = bpf_user_ringbuf_drain(&user_ringbuf, do_nothing_cb, NULL, 0);
+	ret = bpf_user_ringbuf_drain(&user_ringbuf, do_nothing_cb, &context, 0);
+
+
+	if (ret == EBUSY) {
+		bpf_printk("ERROR: ring buffer is contended, and another calling context was concurrently draining the ring buffer.");
+	}
+	else if (ret == EINVAL) {
+		bpf_printk("ERROR: user-space is not properly tracking the ring buffer due to the producer position not being aligned to 8 bytes, a sample not being aligned to 8 bytes, or the producer position not matching the advertised length of a sample.");
+	}
+	else if (ret == E2BIG) {
+		bpf_printk("ERROR: user-space has tried to publish a sample which is larger than the size of the ring buffer, or which cannot fit within a struct bpf_dynptr.");
+	}
+	else if (ret > 0) {
+		bpf_printk("Value outside is: %d", context);
+	}
+	else {
+		bpf_printk("No data samples to process");
+	}
 
 	return 0;
 }

@@ -27,6 +27,7 @@ static int write_samples(struct user_ring_buffer *ringbuf)
 	}
 
 	entry->i = getpid();
+	printf("PID is: %d\n", entry->i);
 	strcpy(entry->comm, "hello");
 
 	int read = snprintf(entry->comm, sizeof(entry->comm), "%u", i);
