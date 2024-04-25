@@ -14,9 +14,35 @@ static void drain_current_samples(void)
 	printf("Draining current samples...\n");
 }
 
-static int write_samples(struct user_ring_buffer *ringbuf)
+/*
+static int write_samples(struct user_ring_buffer *ringbuf, int dest_port)
 {
 	int err = 0;
+	struct user_sample *sample;
+
+	printf("Size of sample: %ld\n", sizeof(*sample));
+	sample = user_ring_buffer__reserve(ringbuf, sizeof(*sample));
+	if (!sample) {
+		err = -errno;
+		printf("Failed to reserve user ring buffer for sample\n");
+		goto done;
+	}
+
+	sample->port = getpid(); //dest_port;
+	printf("Port that will be forwarded through user ring buffer: %d\n", sample->port);
+
+	printf("Submitting port %d to user ring buffer\n", sample->port);
+	user_ring_buffer__submit(ringbuf, sample);
+
+done:
+	drain_current_samples();
+
+	return err;
+}
+*/
+static int write_samples(struct user_ring_buffer *ringbuf)
+{
+	int i, err = 0;
 	struct user_sample *entry;
 
 	entry = user_ring_buffer__reserve(ringbuf, sizeof(*entry));
@@ -26,11 +52,10 @@ static int write_samples(struct user_ring_buffer *ringbuf)
 		goto done;
 	}
 
-	entry->port = 8080;
+	entry->port = getpid();
 	printf("PID is: %d\n", entry->port);
 	strcpy(entry->comm, "hello");
 
-	int i = 0;
 	int read = snprintf(entry->comm, sizeof(entry->comm), "%u", i);
 	if (read <= 0)
 	{
@@ -66,17 +91,10 @@ struct user_ring_buffer *user_ringbuf = NULL;
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-	 __u32 *dest_port = data;
-	struct tm *tm;
-	char ts[32];
-	time_t t;
-
-	time(&t);
-	tm = localtime(&t);
-	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+	 int *dest_port = data;
 
 	printf("Received port %d in user space from kernel ring buffer.\n", *dest_port);
-	write_samples(user_ringbuf);
+	write_samples(user_ringbuf);//, *dest_port);
 	return 0;
 }
 
@@ -130,11 +148,6 @@ int main(int argc, char **argv)
 	}
 	user_ringbuf = user_ring_buffer__new(bpf_map__fd(skel->maps.user_ringbuf), NULL);
 
-	write_samples(user_ringbuf);
-
-	/* Process events */
-	printf("%-8s %-5s %-16s %-7s %-7s %s\n",
-		   "TIME", "EVENT", "COMM", "PID", "PPID", "FILENAME/EXIT CODE");
 	while (!exiting)
 	{
 		err = ring_buffer__poll(rb, 100 /* timeout, ms */);

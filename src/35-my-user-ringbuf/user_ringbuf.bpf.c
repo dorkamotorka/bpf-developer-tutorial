@@ -25,11 +25,28 @@ struct {
 } kernel_ringbuf SEC(".maps");
 
 int read = 0;
+int port;
 
 static __always_inline __u16 csum_fold_helper(__u32 csum)
 {
 	return ~((csum & 0xffff) + (csum >> 16));
 }
+
+/*
+static long extract_port(struct bpf_dynptr *dynptr, int *context) {
+	struct user_sample *sample;
+	bpf_printk("Inside extract_port before bpf_dynptr_data()");
+	bpf_printk("Size of sample is %ld", sizeof(*sample));
+	sample = bpf_dynptr_data(dynptr, 0, sizeof(*sample));
+	bpf_printk("Inside extract_port after bpf_dynptr_data()");
+	if (!sample)
+		return 0;
+
+	*context = sample->port;
+	bpf_printk("context is: %d", *context);
+	return 0;
+}
+*/
 
 static long extract_port(struct bpf_dynptr *dynptr, int *context) {
 	struct user_sample *sample;
@@ -40,70 +57,6 @@ static long extract_port(struct bpf_dynptr *dynptr, int *context) {
 	*context = sample->port;
 	bpf_printk("context is: %d", *context);
 	return 0;
-}
-
-SEC("tc") int tc_egress(struct __sk_buff *ctx) {
-	void *data_end = (void *)(unsigned long long)ctx->data_end;
-	void *data = (void *)(unsigned long long)ctx->data;
-
-	int eth_type;
-	int ip_type;
-	int tcp_type;
-	struct hdr_cursor nh;
-	struct ethhdr *eth;
-	struct iphdr *iphdr;
-	struct ipv6hdr *ipv6hdr;
-	struct tcphdr *tcphdr; 
-
-	nh.pos = data;
-
-	/* Parse Ethernet and IP headers */
-	eth_type = parse_ethhdr(&nh, data_end, &eth);
-	if (eth_type == bpf_htons(ETH_P_IP)) {
-		ip_type = parse_iphdr(&nh, data_end, &iphdr);
-		if (ip_type != IPPROTO_TCP) {
-			goto out;
-		}
-	} else {
-		goto out;
-	}
-
-	tcp_type = parse_tcphdr(&nh, data_end, &tcphdr);
-	if ((void*)(tcphdr + 1) > data_end) {
-		goto out;
-	}
-
-	if (bpf_ntohs(tcphdr->source) == 8080) {
-		// receive data from userspace
-		int context;
-		long ret = bpf_user_ringbuf_drain(&user_ringbuf, extract_port, &context, 0);
-
-		if (ret == EBUSY) {
-			bpf_printk("ERROR: ring buffer is contended, and another calling context was concurrently draining the ring buffer.");
-		}
-		else if (ret == EINVAL) {
-			bpf_printk("ERROR: user-space is not properly tracking the ring buffer due to the producer position not being aligned to 8 bytes, a sample not being aligned to 8 bytes, or the producer position not matching the advertised length of a sample.");
-		}
-		else if (ret == E2BIG) {
-			bpf_printk("ERROR: user-space has tried to publish a sample which is larger than the size of the ring buffer, or which cannot fit within a struct bpf_dynptr.");
-		}
-		else if (ret > 0) {
-			bpf_printk("Port number is: %d", context);
-			// We need to update the packet checksum when modifying the header.
-			struct tcphdr tcphdr_old;
-			__u32 csum = tcphdr->check;
-			tcphdr_old = *tcphdr;
-			tcphdr->dest = bpf_htons(context); // Change the destination port to 8080
-			csum = bpf_csum_diff((__be32 *)&tcphdr_old, 4, (__be32 *)tcphdr, 4, ~csum);
-			tcphdr->check = csum_fold_helper(csum);
-		}
-		else {
-			bpf_printk("No data samples to process");
-		}
-	}
-
-out:
-	return TC_ACT_OK;
 }
 
 SEC("xdp") int xdp_ingress(struct xdp_md *ctx) {
@@ -155,8 +108,9 @@ SEC("xdp") int xdp_ingress(struct xdp_md *ctx) {
     goto out;
   }
 
-  if (tcp->syn == 1 && bpf_ntohs(tcp->dest) == 8081) {
+  if (tcp->syn == 1 && bpf_ntohs(tcp->dest) == 8080) {
     __u32 dest_port = bpf_ntohs(tcp->dest);
+		port = bpf_ntohs(tcp->dest);
 
 		// We need to update the packet checksum when modifying the header.
 		struct tcphdr tcphdr_old;
@@ -179,4 +133,71 @@ SEC("xdp") int xdp_ingress(struct xdp_md *ctx) {
     
 out:
   return XDP_PASS;
+}
+
+SEC("tc") int tc_egress(struct __sk_buff *ctx) {
+	void *data_end = (void *)(unsigned long long)ctx->data_end;
+	void *data = (void *)(unsigned long long)ctx->data;
+
+	int eth_type;
+	int ip_type;
+	int tcp_type;
+	struct hdr_cursor nh;
+	struct ethhdr *eth;
+	struct iphdr *iphdr;
+	struct ipv6hdr *ipv6hdr;
+	struct tcphdr *tcphdr; 
+
+	nh.pos = data;
+
+	/* Parse Ethernet and IP headers */
+	eth_type = parse_ethhdr(&nh, data_end, &eth);
+	if (eth_type == bpf_htons(ETH_P_IP)) {
+		ip_type = parse_iphdr(&nh, data_end, &iphdr);
+		if (ip_type != IPPROTO_TCP) {
+			goto out;
+		}
+	} else {
+		goto out;
+	}
+
+	tcp_type = parse_tcphdr(&nh, data_end, &tcphdr);
+	if ((void*)(tcphdr + 1) > data_end) {
+		goto out;
+	}
+
+	//bpf_printk("Calling TC hook. Source port is %d", bpf_ntohs(tcphdr->source));
+	if (bpf_ntohs(tcphdr->source) == 8080) {
+		// receive data from userspace
+		int context;
+		bpf_printk("Before bpf_user_ringbuf_drain()");
+		long ret = bpf_user_ringbuf_drain(&user_ringbuf, extract_port, &context, 0);
+		bpf_printk("After bpf_user_ringbuf_drain()");
+
+		if (ret == EBUSY) {
+			bpf_printk("ERROR: ring buffer is contended, and another calling context was concurrently draining the ring buffer.");
+		}
+		else if (ret == EINVAL) {
+			bpf_printk("ERROR: user-space is not properly tracking the ring buffer due to the producer position not being aligned to 8 bytes, a sample not being aligned to 8 bytes, or the producer position not matching the advertised length of a sample.");
+		}
+		else if (ret == E2BIG) {
+			bpf_printk("ERROR: user-space has tried to publish a sample which is larger than the size of the ring buffer, or which cannot fit within a struct bpf_dynptr.");
+		}
+		else if (ret > 0) {
+			bpf_printk("Port number is: %d", context);
+			// We need to update the packet checksum when modifying the header.
+			struct tcphdr tcphdr_old;
+			__u32 csum = tcphdr->check;
+			tcphdr_old = *tcphdr;
+			tcphdr->dest = bpf_htons(context); // Change the destination port to 8080
+			csum = bpf_csum_diff((__be32 *)&tcphdr_old, 4, (__be32 *)tcphdr, 4, ~csum);
+			tcphdr->check = csum_fold_helper(csum);
+		}
+		else {
+			bpf_printk("No data samples to process - ret value is %d, but global port is %d", ret, port);
+		}
+	}
+
+out:
+	return TC_ACT_OK;
 }
