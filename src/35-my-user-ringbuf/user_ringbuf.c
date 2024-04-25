@@ -16,7 +16,7 @@ static void drain_current_samples(void)
 
 static int write_samples(struct user_ring_buffer *ringbuf)
 {
-	int i, err = 0;
+	int err = 0;
 	struct user_sample *entry;
 
 	entry = user_ring_buffer__reserve(ringbuf, sizeof(*entry));
@@ -26,10 +26,11 @@ static int write_samples(struct user_ring_buffer *ringbuf)
 		goto done;
 	}
 
-	entry->port = getpid();
+	entry->port = 8080;
 	printf("PID is: %d\n", entry->port);
 	strcpy(entry->comm, "hello");
 
+	int i = 0;
 	int read = snprintf(entry->comm, sizeof(entry->comm), "%u", i);
 	if (read <= 0)
 	{
