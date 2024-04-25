@@ -66,7 +66,7 @@ struct user_ring_buffer *user_ringbuf = NULL;
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-	const struct event *e = data;
+	 __u32 *dest_port = data;
 	struct tm *tm;
 	char ts[32];
 	time_t t;
@@ -75,8 +75,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	printf("%-8s %-5s %-16s %-7d\n",
-		   ts, "SIGN", e->comm, e->pid);
+	printf("Received port %d in user space from kernel ring buffer.\n", *dest_port);
 	write_samples(user_ringbuf);
 	return 0;
 }
@@ -121,7 +120,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	/* Set up ring buffer polling */
+	/* Set up kernel ring buffer polling */
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.kernel_ringbuf), handle_event, NULL, NULL);
 	if (!rb)
 	{
